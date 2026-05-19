@@ -1,0 +1,211 @@
+name: SafeReach CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION:   "20"
+
+jobs:
+  # ── Backend: lint + test ──────────────────────────────────────────────────
+  backend-test:
+    name: Backend — Lint & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgis/postgis:15-3.4
+        env:
+          POSTGRES_USER:     safereach
+          POSTGRES_PASSWORD: safereach
+          POSTGRES_DB:       safereach_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7.2-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint with Ruff
+        run: |
+          pip install ruff
+          ruff check app/
+
+      - name: Type check with mypy
+        run: |
+          pip install mypy types-redis
+          mypy app/ --ignore-missing-imports --no-strict-optional || true
+
+      - name: Run pytest
+        env:
+          APP_ENV:      testing
+          DATABASE_URL: postgresql+asyncpg://safereach:safereach@localhost:5432/safereach_test
+          REDIS_URL:    redis://localhost:6379/0
+          SECRET_KEY:   test-secret-key-for-ci
+        run: |
+          pytest app/tests/ -v --tb=short --cov=app --cov-report=term-missing --cov-fail-under=70
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # ── Frontend: lint + build ────────────────────────────────────────────────
+  frontend-build:
+    name: Frontend — Lint & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint with ESLint
+        run: npm run lint
+
+      - name: Build (Next.js)
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+        run: npm run build
+
+  # ── AI model smoke tests ──────────────────────────────────────────────────
+  ai-smoke-test:
+    name: AI — Model Smoke Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install AI dependencies only
+        run: pip install torch torchvision xgboost scikit-learn numpy pandas
+
+      - name: Smoke test — CNN stub
+        run: |
+          python -c "
+          import sys; sys.path.insert(0, '.')
+          import os; os.environ['SEVERITY_CNN_MODEL_PATH'] = 'nonexistent.pt'
+          # Test that AIService degrades gracefully when model missing
+          from app.services.ai_service import AIService
+          s = AIService()
+          res = s._sync_predict_severity('fake.jpg')
+          print('CNN stub result:', res)
+          assert res is None or res.severity in ('low', 'medium', 'critical'), 'Unexpected result'
+          print('Smoke test PASSED')
+          "
+
+      - name: Smoke test — XGBoost hotspot
+        run: |
+          python -c "
+          import sys; sys.path.insert(0, '.')
+          from notebooks.hotspot_model.train_hotspot_xgboost import generate_synthetic_dataset
+          df = generate_synthetic_dataset(n_samples=100)
+          print('Dataset shape:', df.shape)
+          assert len(df) == 100
+          print('Smoke test PASSED')
+          "
+
+  # ── Docker build ──────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker — Build & Push
+    runs-on: ubuntu-latest
+    needs: [backend-test, frontend-build]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context:   ./backend
+          push:      true
+          tags:      ${{ secrets.DOCKER_USERNAME }}/safereach-backend:latest
+          cache-from: type=gha
+          cache-to:  type=gha,mode=max
+
+  # ── Deploy to Railway ─────────────────────────────────────────────────────
+  deploy:
+    name: Deploy — Railway
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy backend to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service safereach-backend
+
+      - name: Deploy dashboard to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token:   ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id:  ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: frontend
+          vercel-args: --prod

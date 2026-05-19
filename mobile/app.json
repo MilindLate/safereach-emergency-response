@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "SafeReach",
+    "slug": "safereach",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "in.safereach.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "SafeReach uses your location to dispatch emergency services to your exact position.",
+        "NSLocationAlwaysUsageDescription": "SafeReach uses background location to track ambulance ETA.",
+        "NSCameraUsageDescription": "SafeReach captures crash photos to help emergency dispatchers assess severity.",
+        "NSMicrophoneUsageDescription": "SafeReach listens for voice SOS activation in hands-free mode."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0f172a"
+      },
+      "package": "in.safereach.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA",
+        "RECORD_AUDIO",
+        "VIBRATE",
+        "RECEIVE_BOOT_COMPLETED",
+        "FOREGROUND_SERVICE"
+      ]
+    },
+    "plugins": [
+      "expo-location",
+      "expo-camera",
+      "expo-secure-store",
+      "expo-notifications",
+      [
+        "expo-build-properties",
+        {
+          "android": { "compileSdkVersion": 34 },
+          "ios": { "deploymentTarget": "14.0" }
+        }
+      ]
+    ],
+    "extra": {
+      "eas": { "projectId": "safereach-ctrlaltelite" }
+    }
+  }
+}

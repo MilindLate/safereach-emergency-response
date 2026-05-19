@@ -1,0 +1,176 @@
+version: "3.9"
+
+# SafeReach — Local Development Stack
+# Starts: FastAPI backend, PostgreSQL+PostGIS, Redis, OSRM, Celery worker/beat
+#
+# Quick start:
+#   docker compose up -d
+#   docker compose logs -f backend
+
+services:
+
+  # ── PostgreSQL 15 + PostGIS 3.4 ────────────────────────────────────────────
+  postgres:
+    image: postgis/postgis:15-3.4
+    container_name: safereach-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     safereach
+      POSTGRES_PASSWORD: safereach
+      POSTGRES_DB:       safereach
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U safereach"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis 7 ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: safereach-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: safereach-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV:      development
+      DATABASE_URL: postgresql+asyncpg://safereach:safereach@postgres:5432/safereach
+      REDIS_URL:    redis://redis:6379/0
+      SECRET_KEY:   dev-secret-key-change-in-production
+      OSRM_BASE_URL: http://osrm:5000
+    env_file:
+      - ./backend/.env.local
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Celery worker ────────────────────────────────────────────────────────────
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: safereach-celery-worker
+    restart: unless-stopped
+    environment:
+      APP_ENV:           development
+      DATABASE_URL:      postgresql+asyncpg://safereach:safereach@postgres:5432/safereach
+      REDIS_URL:         redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    env_file:
+      - ./backend/.env.local
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - backend
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
+
+  # ── Celery beat (scheduler) ──────────────────────────────────────────────────
+  celery_beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: safereach-celery-beat
+    restart: unless-stopped
+    environment:
+      APP_ENV:           development
+      DATABASE_URL:      postgresql+asyncpg://safereach:safereach@postgres:5432/safereach
+      REDIS_URL:         redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    env_file:
+      - ./backend/.env.local
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - celery_worker
+    command: celery -A app.tasks.celery_app beat --loglevel=info --scheduler celery.beat.PersistentScheduler
+
+  # ── OSRM routing engine ──────────────────────────────────────────────────────
+  # Note: For production, pre-process India OSM data:
+  #   docker run -v $(pwd)/osrm-data:/data osrm/osrm-backend \
+  #     osrm-extract -p /opt/car.lua /data/india.osm.pbf
+  osrm:
+    image: osrm/osrm-backend:v5.27.1
+    container_name: safereach-osrm
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./osrm-data:/data
+    command: osrm-routed --algorithm mld /data/india.osrm
+    profiles:
+      - with-osrm   # opt-in: docker compose --profile with-osrm up
+
+  # ── Next.js dashboard (development) ─────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: safereach-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    depends_on:
+      - backend
+    command: npm run dev
+
+  # ── Flower (Celery monitoring UI) ────────────────────────────────────────────
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: safereach-flower
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+    depends_on:
+      - redis
+    command: celery -A app.tasks.celery_app flower --port=5555
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: safereach-network
