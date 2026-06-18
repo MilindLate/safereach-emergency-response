@@ -1,14 +1,12 @@
 # SafeReach — Intelligent Emergency Response for Road Accidents
 
-> **Team CtrlAltElite** | CoERS IIT Madras AI Road Safety Hackathon 2026  
-> Problem Statement: **RoadSoS — PS-3**  
-> Submission Deadline: 31 May 2026
+> AI-powered emergency response platform for road accidents, built to cut ambulance dispatch time and connect victims, dispatchers, ambulance crews, hospitals, and families on one coordinated system.
 
 ---
 
 ## Overview
 
-SafeReach is an AI-powered emergency response platform targeting India's road safety crisis — **1.7 lakh fatalities per year**, many preventable with faster response. The platform reduces time-to-dispatch by **30–40%** through real-time AI-driven coordination between victims, dispatchers, ambulance crews, and hospitals.
+Road accident fatalities in India are heavily driven by delayed emergency response — every additional minute before help arrives meaningfully lowers survival odds. SafeReach addresses this directly: an AI-driven coordination layer that takes a victim's SOS signal, classifies crash severity from a photo, finds and dispatches the nearest available ambulance, recomputes the optimal route in real time, and keeps hospitals and family members informed automatically — aiming to cut time-to-dispatch by **30–40%**.
 
 ### Four Components
 
@@ -54,6 +52,19 @@ SafeReach is an AI-powered emergency response platform targeting India's road sa
 │  PostgreSQL + PostGIS │ Redis │ AWS S3 │ iRAD Feed │ Celery │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## How It Works
+
+1. **SOS Trigger** — a victim (or bystander) taps the SOS button in the mobile app. GPS location is captured within 5 seconds, with retry logic for poor signal conditions.
+2. **Severity Classification** — an optional crash photo is uploaded and run through the EfficientNet-B2 severity model, returning a result in under 2 seconds.
+3. **Dispatch** — the dispatcher dashboard surfaces the incident with the nearest available ambulances ranked by ETA; a coordinator assigns a unit in one click, or the system can auto-assign based on configured rules.
+4. **Live Routing** — the assigned crew gets turn-by-turn navigation, with the route recomputed roughly every 30 seconds as traffic conditions change.
+5. **Hospital Pre-Alert** — the destination hospital is notified ahead of arrival so triage can be prepped in advance.
+6. **Family Notification** — emergency contacts receive an SMS with a live tracking link, no login required.
+7. **Offline Fallback** — if data connectivity is unavailable, the system falls back to an SMS-based SOS path.
+8. **Hotspot Intelligence** — historical incident data feeds a rolling XGBoost model that refreshes an accident hotspot heatmap every 6 hours, useful for proactive resource positioning.
 
 ---
 
@@ -181,11 +192,13 @@ Road-Safety-CtrlAltElite/
 │   │   ├── models/            SQLAlchemy ORM models
 │   │   ├── schemas/           Pydantic request/response
 │   │   ├── services/          Business logic
-│   │   │   ├── sos_service.py       SOS pipeline
-│   │   │   ├── ai_service.py        CNN + XGBoost inference
-│   │   │   ├── routing_service.py   OSRM + Google Maps
+│   │   │   ├── sos_service.py        SOS pipeline
+│   │   │   ├── ai_service.py         CNN + XGBoost inference
+│   │   │   ├── routing_service.py    OSRM + Google Maps
 │   │   │   ├── notification_service.py  Twilio + FCM
-│   │   │   └── s3_service.py        Photo upload
+│   │   │   ├── geocoding_service.py   Address ↔ coordinates
+│   │   │   ├── bhashini_service.py    Multilingual support
+│   │   │   └── s3_service.py         Photo upload
 │   │   ├── tasks/             Celery async tasks
 │   │   └── tests/             pytest test suites
 │   ├── alembic/               Database migrations
@@ -199,16 +212,16 @@ Road-Safety-CtrlAltElite/
 │   └── package.json
 ├── mobile/                    React Native victim + crew apps
 │   ├── src/screens/
-│   │   ├── SOSScreen.jsx           Victim — single SOS button
-│   │   ├── CrewNavigationScreen.jsx Crew — turn-by-turn nav
-│   │   └── SettingsScreen.jsx      Emergency contact setup
+│   │   ├── SOSScreen.jsx            Victim — single SOS button
+│   │   ├── CrewNavigationScreen.jsx  Crew — turn-by-turn nav
+│   │   └── SettingsScreen.jsx       Emergency contact setup
 │   ├── app.json               Expo config
 │   └── package.json
 ├── notebooks/
 │   ├── severity_cnn/
-│   │   └── train_severity_cnn.py   EfficientNet-B2 training
+│   │   └── train_severity_cnn.py    EfficientNet-B2 training
 │   └── hotspot_model/
-│       └── train_hotspot_xgboost.py XGBoost training
+│       └── train_hotspot_xgboost.py  XGBoost training
 ├── docker-compose.yml
 ├── .github/workflows/ci.yml   CI/CD pipeline
 └── README.md
@@ -236,20 +249,20 @@ Road-Safety-CtrlAltElite/
 
 ---
 
-## Functional Requirements Coverage
+## Key Functional Capabilities
 
-| ID | Requirement | Status |
-|----|-------------|--------|
-| FR-01 | GPS capture within 5s of SOS | ✅ `SOSScreen.jsx` with retry logic |
-| FR-02 | Photo upload within 10s | ✅ Background upload + compression |
-| FR-03 | CNN result within 2s | ✅ `ai_service.py` with 1.5s timeout |
-| FR-04 | One-click unit assignment | ✅ `dispatch/assign` endpoint |
-| FR-05 | Route recomputed every 30s | ✅ `routing_service.py` + Socket.io push |
-| FR-06 | Family SMS within 60s | ✅ `notification_service.py` via Twilio |
-| FR-07 | Hospital pre-alert 10min before | ✅ Celery scheduled task |
-| FR-08 | SMS fallback offline | ✅ `/sos/offline` + service worker |
-| FR-09 | Voice SOS detection | ✅ Whisper-tiny on-device module |
-| FR-10 | Hotspot heatmap every 6h | ✅ Celery beat `refresh_hotspot_grid` |
+| Capability | Implementation |
+|------------|-----------------|
+| GPS capture within 5s of SOS | `SOSScreen.jsx` with retry logic |
+| Photo upload within 10s | Background upload + compression |
+| Severity result within 2s | `ai_service.py` with 1.5s timeout |
+| One-click unit assignment | `dispatch/assign` endpoint |
+| Route recomputed every 30s | `routing_service.py` + Socket.io push |
+| Family SMS within 60s | `notification_service.py` via Twilio |
+| Hospital pre-alert 10 min before arrival | Celery scheduled task |
+| SMS fallback when offline | `/sos/offline` + service worker |
+| Voice SOS detection | Whisper-tiny on-device module |
+| Hotspot heatmap refreshed every 6h | Celery beat `refresh_hotspot_grid` |
 
 ---
 
@@ -269,15 +282,9 @@ Road-Safety-CtrlAltElite/
 
 ---
 
-
-
----
-
 ## Social Impact
 
-Based on published research, a **12-minute reduction** in response time across Indian highway crashes is estimated to prevent **15,000–20,000 fatalities annually** assuming nationwide adoption. SafeReach is designed to integrate with existing national infrastructure (iRAD, MoRTH 112, NHA) rather than replacing it.
+Based on published research, a **12-minute reduction** in response time across Indian highway crashes is estimated to prevent **15,000–20,000 fatalities annually** if adopted nationwide. SafeReach is designed to integrate with existing national infrastructure (iRAD, MoRTH 112, NHA) rather than replace it.
 
 ---
-
-*SafeReach | Team CtrlAltElite | CoERS IIT Madras AI Road Safety Hackathon 2026*  
 
